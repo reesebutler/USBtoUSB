@@ -6,11 +6,12 @@ from dotenv import load_dotenv
 from time import sleep
 from enum import auto
 from enum import Enum
+from key_mapping import keymap
 
 class KeyAction(Enum):
-    PRESS = auto()
+    TAP = auto()
     RELEASE = auto()
-    HOLD = auto()
+    PRESS = auto()
 
 class UsbToUsb:
     # the settings used to connect here, are those required by the USBtoUSB (Hagstrom Electronics product) hardware
@@ -20,26 +21,24 @@ class UsbToUsb:
     stopbits = serial.STOPBITS_ONE
 
     def __init__(self):
+        load_dotenv() # load .env variables
+
         # connect to the USBtoUSB com port
         port_name = os.environ.get('PORT_NAME');
         self.com = serial.Serial(port_name, self.baudrate, self.bytesize, self.parity, self.stopbits)
-
-        # load the key mappings
-        key_mapping_file = open('key_mapping_file.json')
-        self.key_mapping = json.load(key_mapping_file)
 
     def sendByte(self, value: int):
         self.com.write((value).to_bytes(1, 'big', signed = False))
 
     def keyAction(self, key: str, action: KeyAction):
-        key_code_press = self.key_mapping[key] # code to press down the key
-        key_code_release = self.key_mapping[key] + 128 # code to release the key
+        key_code_press = keymap[key][0] # code to press down the key
+        key_code_release = keymap[key][0] + 128 # code to release the key
 
-        if (action is KeyAction.PRESS):
+        if (action is KeyAction.TAP):
             # @todo possibly add sleep in between the press and release
             self.sendByte(key_code_press)
             self.sendByte(key_code_release)
-        elif (action is KeyAction.HOLD):
+        elif (action is KeyAction.PRESS):
             self.sendByte(key_code_press)
         elif (action is KeyAction.RELEASE):
             self.sendByte(key_code_release)
@@ -57,12 +56,10 @@ class UsbToUsb:
         self.com.close()
 
 # -------- main entrypoint ---------- #
-# load .env variables
-load_dotenv()
 
-usb = UsbToUsb()
+# usb = UsbToUsb()
 
-usb.keyAction('r', KeyAction.PRESS)
+# usb.keyAction('r', KeyAction.PRESS)
 
 
 # ------------------------------ #
