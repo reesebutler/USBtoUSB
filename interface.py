@@ -1,9 +1,10 @@
-import sys, pygame
+import sys, pygame, math
 from key_mapping import keymap
 from usbtousb import UsbToUsb
 from usbtousb import KeyAction
 from usbtousb import MouseButton
 from usbtousb import MouseScrollDirection
+from random import randrange
 from string import ascii_lowercase
 from threading import Event
 from threading import Thread
@@ -93,7 +94,8 @@ shortcuts = {
     'lock_to_window': {pygame.K_RSUPER, pygame.K_LALT, pygame.K_RETURN},
     'quit': {pygame.K_RSUPER, pygame.K_LALT, pygame.K_q},
     'paste': {pygame.K_RSUPER, pygame.K_LALT, pygame.K_v},
-    'paste_with_shift': {pygame.K_RSUPER, pygame.K_LALT, pygame.K_LSHIFT, pygame.K_v}
+    'paste_with_shift': {pygame.K_RSUPER, pygame.K_LALT, pygame.K_LSHIFT, pygame.K_v},
+    'toggle_auto_jiggle': {pygame.K_RSUPER, pygame.K_LALT, pygame.K_j},
 }
 
 def shortcutIsPressed(shortcut: str):
@@ -105,6 +107,13 @@ def shortcutIsPressed(shortcut: str):
         pressed.clear()
 
     return shortcutIsPressed
+
+last_user_input_tick = pygame.time.get_ticks()
+
+# keep track of when the user last gave input of any kind to the USBtoUSB device
+def updateLastUserInputTick():
+    global last_user_input_tick
+    last_user_input_tick = pygame.time.get_ticks()
 
 paste_thread = None
 paste_thread_should_close = Event()
@@ -140,8 +149,11 @@ def pasteFromClipboard(should_hold_shift_for_newlines: bool = False):
                 usb.keyAction('L_SHIFT', KeyAction.RELEASE, should_delay=True)
                 pressed = True
 
-            # let the user know there was a value in their clipboard that couldn't be reproduced
-            if (pressed is False): print("unable to type '" + char + "' from clipboard")
+            if (pressed):
+                updateLastUserInputTick()
+            else:
+                # let the user know there was a value in their clipboard that couldn't be reproduced
+                print("unable to type '" + char + "' from clipboard")
 
         # This is not the last line of text in a multi-line clipboard value, so press the enter key
         if i + 1 < len(clipboard):
@@ -149,14 +161,51 @@ def pasteFromClipboard(should_hold_shift_for_newlines: bool = False):
             usb.keyAction('ENTER', KeyAction.TAP, should_delay=True)
             if should_hold_shift_for_newlines: usb.keyAction('L_SHIFT', KeyAction.RELEASE, should_delay=True)
 
+mouse_jiggle_directions = []
+
+def resetMouseJiggleDirections():
+    mouse_jiggle_points = 10 # how many points on a circle do we have to jiggle with? TODO also randomize this within a range
+    mouse_jiggle_radius = 20 # how big is the circle's radius in pixels? TODO this could maybe be randomized within a range each time this function is called?
+    
+    # find `mouse_jiggle_points` number of points on a circle
+    #TODO see what happens for fractional radius value, or fractional number of points
+    for i in range(mouse_jiggle_points + 1):
+        # point_number_halved = float(mouse_jiggle_points / 2)
+
+        # using `10` as an example: move the points so that instead of going 0 through 10, they go -5 to 5.
+        current_point_shifted = i - mouse_jiggle_radius 
+
+        current_value_scaled = math.degrees(current_point_shifted / mouse_jiggle_radius)
+
+        x_direction = round(math.cos(current_value_scaled) * mouse_jiggle_radius)
+        y_direction = round(math.sin(current_value_scaled) * mouse_jiggle_radius)
+
+        mouse_jiggle_directions.append((x_direction, y_direction))
+
+    x_position_relative_to_original = 0
+    y_position_relative_to_original = 0
+
+    # see if we're going to end somewhere other than where we started
+    for direction in mouse_jiggle_directions:
+        x_position_relative_to_original += direction[0]
+        y_position_relative_to_original += direction[1]
+
+    # we aren't going to end where we started, so add a final direction that takes us the rest of the way home
+    if x_position_relative_to_original != 0 or y_position_relative_to_original != 0:
+        mouse_jiggle_directions.append((x_position_relative_to_original * -1, y_position_relative_to_original * -1))
+
+
+updateLastUserInputTick()
 locked_to_window = False
+auto_jiggle_is_on = False
 mouse_queue_has_input = False
-mouse_queue_last_poll = pygame.time.get_ticks()
 
 while True:
     for event in pygame.event.get():
         # allow us to close the program cleanly
-        if event.type in (pygame.QUIT, pygame.WINDOWCLOSE): sys.exit()
+        if event.type in (pygame.QUIT, pygame.WINDOWCLOSE):
+            print('\nlater alligator')
+            sys.exit()
 
         # handle key presses
         if event.type in (pygame.KEYDOWN, pygame.KEYUP):
@@ -207,6 +256,32 @@ while True:
                 pygame.mouse.set_visible(not locked_to_window) # hide the mouse cursor when locked, show it when unlocked
                 pygame.event.set_grab(locked_to_window)
 
+                # make sure any future auto-mouse-jiggling begins and ends in approximately the same place
+                if locked_to_window:
+                    x_direction_remaining = 0
+                    y_direction_remaining = 0
+
+                    for direction in mouse_jiggle_directions:
+                        x_direction_remaining += direction[0]
+                        y_direction_remaining += direction[1]
+
+                    usb.moveMouseInDirection(x_direction_remaining, y_direction_remaining)
+                    resetMouseJiggleDirections()
+                    print('lock input to window ON')
+                else:
+                    print('lock input to window OFF')
+
+                continue
+
+            # toggle automatic mouse jiggling
+            if shortcutIsPressed('toggle_auto_jiggle'):
+                auto_jiggle_is_on = False if auto_jiggle_is_on else True
+
+                if auto_jiggle_is_on:
+                    print('automatic mouse jiggle ON')
+                else:
+                    print('automatic mouse jiggle OFF')
+
                 continue
 
             pygame_key_name = pygame_keycode_map[event.key]
@@ -219,6 +294,11 @@ while True:
 
             # press or release the destination key
             usb.keyAction(usb_key_name, usb_key_action)
+            updateLastUserInputTick()
+
+        # don't process mouse input while a paste thread is active
+        if paste_thread is not None and paste_thread.is_alive():
+            continue;
 
         # handle mouse movement
         if locked_to_window and event.type == pygame.MOUSEMOTION:
@@ -262,16 +342,29 @@ while True:
 
                 usb.mouseScrollAction(direction, scroll_value, apply_immediately=False)
 
-        # TODO mouse auto-jiggler
-        # if not locked_to_window:
+    # automatically jiggle the mouse
+    if auto_jiggle_is_on and (pygame.time.get_ticks() - last_user_input_tick) > 300000: # TODO make this milliseconds value configureable
+        if len(mouse_jiggle_directions) == 0:
+            resetMouseJiggleDirections()
 
-        # send a single updated mouse control packet for movement, clicks, and scrolling
-        if mouse_queue_has_input:
-            mouse_queue_has_input = False
-            usb.sendMouseControlPacket()
+        # randomly choose one of the directions on the jiggle circle we haven't used yet
+        direction_index = randrange(len(mouse_jiggle_directions))
+        direction = mouse_jiggle_directions.pop(direction_index)
 
+        x_direction = round(direction[0])
+        y_direction = round(direction[1])
 
-        # TODO make it so you can pipe text input into the script, to directly make it type out the given text
+        usb.moveMouseInDirection(x_direction, y_direction, apply_immediately=False)
+        mouse_queue_has_input = True
+
+    # send a single updated mouse control packet for movement, clicks, and scrolling, etc.
+    if mouse_queue_has_input:
+        mouse_queue_has_input = False
+        usb.sendMouseControlPacket()
+        updateLastUserInputTick()
+
+    # TODO make it so you can pipe text input into the script, to directly make it type out the given text
+    # TODO allow locked_to_window after double clicking in the window
 
     screen.fill(black)
 
