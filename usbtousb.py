@@ -1,12 +1,14 @@
 import os
 import random
 import serial
+import sys
 from dotenv import load_dotenv
 from time import sleep
 from enum import auto
 from enum import Enum
 from key_mapping import keymap
 from numpy import clip
+from string import ascii_lowercase
 
 class KeyAction(Enum):
     TAP = auto()
@@ -29,10 +31,13 @@ class UsbToUsb:
     parity = serial.PARITY_NONE
     stopbits = serial.STOPBITS_ONE
 
-    def __init__(self):
+    def __init__(self, port_name: str = None):
         # load in our .env variables
         load_dotenv()
-        port_name = os.environ.get('PORT_NAME')
+
+        if (port_name is None):
+            port_name = os.environ.get('PORT_NAME')
+
         self.delay_lower_bound = os.environ.get('DELAY_LOWER_BOUND')
         self.delay_upper_bound = os.environ.get('DELAY_UPPER_BOUND')
 
@@ -79,7 +84,7 @@ class UsbToUsb:
             self.sendBytes(key_code_press)
 
             # we need to delay at least a little bit between pressing and releasing the key, otherwise the key may not be released properly
-            sleep(0.005)
+            sleep(0.01)
 
             self.sendBytes(key_code_release) 
         elif (action is KeyAction.PRESS):
@@ -88,6 +93,57 @@ class UsbToUsb:
             self.sendBytes(key_code_release)
 
         if should_delay: sleep(delay)
+
+    def typeOutString(self, input: str, delay: int = None, should_hold_shift_for_newlines: bool = False):
+        # clipboard = pygame.scrap.get("text/plain;charset=utf-8").decode()
+        # clipboard = 'something??' # TODO
+        input = input.splitlines() # make sure we're aware of any line breaks
+
+        shift_key_map = {
+            ' ': 'SPACE', # hardcode this one because I'm lazy
+        }
+        for usb_key_name, usb_key_info in keymap.items():
+            # I used ">=" here just in case I decide to start using more than 3 elements in these lists. I shouldn't. But just in case.
+            if len(usb_key_info) >= 3:
+                key_that_needs_shift = usb_key_info[2]
+                shift_key_map[key_that_needs_shift] = usb_key_name
+
+        # also add capital letters to our shift_key_map
+        for letter in ascii_lowercase:
+            shift_key_map[letter.capitalize()] = letter
+
+        # translate each clipboard character into the appropriate key press(es)
+        for i, line in enumerate(input):
+            for char in line:
+                pressed = False
+
+                # the key is in the mapping, and can be pressed without the shift key
+                if char in keymap:
+
+                    self.keyAction(char, KeyAction.TAP, True)
+                    pressed = True
+
+                # the key is in the mapping, but needs to be pressed with the shift key
+                if (char in shift_key_map):
+                    usb_unshifted_key = shift_key_map[char]
+
+                    self.keyAction('L_SHIFT', KeyAction.PRESS, should_delay=True)
+                    self.keyAction(usb_unshifted_key, KeyAction.TAP, should_delay=True)
+                    self.keyAction('L_SHIFT', KeyAction.RELEASE, should_delay=True)
+                    pressed = True
+
+                # let the user know there was a value in their clipboard that couldn't be reproduced
+                if (pressed is False):
+                    print("unable to type '" + char + "' from clipboard")
+
+                if delay is not None:
+                    sleep(delay)
+
+            # This is not the last line of text in a multi-line clipboard value, so press the enter key
+            if i + 1 < len(input):
+                if should_hold_shift_for_newlines: self.keyAction('L_SHIFT', KeyAction.PRESS, should_delay=True)
+                self.keyAction('ENTER', KeyAction.TAP, should_delay=True)
+                if should_hold_shift_for_newlines: self.keyAction('L_SHIFT', KeyAction.RELEASE, should_delay=True)
 
     def moveMouseToPosition(self, x_position: int, y_position: int, apply_immediately: bool = True):
         self.mouse_x_position = x_position
